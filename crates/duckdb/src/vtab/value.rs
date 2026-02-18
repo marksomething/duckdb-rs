@@ -1,3 +1,4 @@
+use crate::core::LogicalTypeId;
 use crate::ffi::{
     duckdb_destroy_value, duckdb_free, duckdb_get_bool, duckdb_get_double, duckdb_get_float, duckdb_get_int16,
     duckdb_get_int32, duckdb_get_int64, duckdb_get_int8, duckdb_get_list_child, duckdb_get_list_size,
@@ -5,7 +6,6 @@ use crate::ffi::{
     duckdb_get_value_type, duckdb_get_varchar, duckdb_is_null_value, duckdb_value,
 };
 use std::{ffi::CStr, fmt, os::raw::c_void};
-use crate::core::LogicalTypeId;
 
 /// The Value object holds a single arbitrary value of any type that can be
 /// stored in the database.
@@ -95,9 +95,9 @@ impl fmt::Display for Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::{LogicalTypeHandle, LogicalTypeId};
     use crate::ffi::{
-        duckdb_create_int64, duckdb_create_list_value, duckdb_create_logical_type, duckdb_create_varchar,
-        duckdb_destroy_logical_type, duckdb_destroy_value, duckdb_value, DUCKDB_TYPE_DUCKDB_TYPE_BIGINT,
+        duckdb_create_int64, duckdb_create_list_value, duckdb_create_varchar, duckdb_destroy_value, duckdb_value,
     };
     use std::ffi::CString;
 
@@ -113,13 +113,11 @@ mod tests {
     fn test_value_to_vec() {
         let list_items: Vec<i64> = vec![1, -200, 2381292];
         let val = unsafe {
-            // Create a duckdb list value
-            let mut logical_type = duckdb_create_logical_type(DUCKDB_TYPE_DUCKDB_TYPE_BIGINT);
+            let logical_type = LogicalTypeHandle::from(LogicalTypeId::Bigint);
             let values: Vec<duckdb_value> = list_items.iter().map(|v| duckdb_create_int64(*v)).collect();
-            let duckdb_val = duckdb_create_list_value(logical_type, values.as_ptr().cast_mut(), values.len() as u64);
+            let duckdb_val =
+                duckdb_create_list_value(logical_type.ptr, values.as_ptr().cast_mut(), values.len() as u64);
 
-            // Clean up temporary resources
-            duckdb_destroy_logical_type(&mut logical_type);
             for mut v in values {
                 duckdb_destroy_value(&mut v);
             }
