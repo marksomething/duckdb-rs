@@ -1,11 +1,17 @@
-use crate::core::LogicalTypeId;
+use crate::core::{LogicalTypeHandle, LogicalTypeId};
 use crate::ffi::{
     duckdb_destroy_value, duckdb_free, duckdb_get_bool, duckdb_get_double, duckdb_get_float, duckdb_get_int16,
     duckdb_get_int32, duckdb_get_int64, duckdb_get_int8, duckdb_get_list_child, duckdb_get_list_size,
-    duckdb_get_type_id, duckdb_get_uint16, duckdb_get_uint32, duckdb_get_uint64, duckdb_get_uint8,
-    duckdb_get_value_type, duckdb_get_varchar, duckdb_is_null_value, duckdb_value,
+    duckdb_get_map_key, duckdb_get_map_size, duckdb_get_map_value, duckdb_get_struct_child, duckdb_get_type_id,
+    duckdb_get_uint16, duckdb_get_uint32, duckdb_get_uint64, duckdb_get_uint8, duckdb_get_value_type,
+    duckdb_get_varchar, duckdb_is_null_value, duckdb_struct_type_child_name, duckdb_value,
 };
-use std::{ffi::CStr, fmt, os::raw::c_void};
+use crate::types::OrderedMap;
+use std::{
+    ffi::{CStr, CString},
+    fmt,
+    os::raw::c_void,
+};
 
 /// The Value object holds a single arbitrary value of any type that can be
 /// stored in the database.
@@ -66,6 +72,36 @@ impl Value {
             out.push(Value::from(child));
         }
         out
+    }
+
+    /// Returns the value as an OrderedMap<String, Value>
+    pub fn to_ordered_map(&self) -> OrderedMap<String, Value> {
+        let type_id = self.logical_type_id();
+        match type_id {
+            LogicalTypeId::Map => {
+                let size = unsafe { duckdb_get_map_size(self.ptr) };
+                let mut out = Vec::with_capacity(size.try_into().unwrap());
+                for i in 0..size {
+                    let key = unsafe { duckdb_get_map_key(self.ptr, i) };
+                    let value = unsafe { duckdb_get_map_value(self.ptr, i) };
+                    out.push((Value::from(key).to_string(), Value::from(value)));
+                }
+                OrderedMap::from(out)
+            }
+            LogicalTypeId::Struct => {
+                let logical_type = unsafe { duckdb_get_value_type(self.ptr) };
+                let size = unsafe { crate::ffi::duckdb_struct_type_child_count(logical_type) };
+                let mut out = Vec::with_capacity(size.try_into().unwrap());
+                for i in 0..size {
+                    let key = unsafe { duckdb_struct_type_child_name(logical_type, i) };
+                    let key_str = unsafe { CString::from_raw(key) }.to_string_lossy().to_string();
+                    let value = unsafe { duckdb_get_struct_child(self.ptr, i) };
+                    out.push((key_str, Value::from(value)));
+                }
+                OrderedMap::from(out)
+            }
+            _ => panic!("to_ordered_map only supports map and struct types, got {:?}", type_id),
+        }
     }
 
     pub fn is_null(&self) -> bool {
@@ -192,6 +228,48 @@ mod tests {
         unsafe {
             let null_val = Value::from(duckdb_create_null_value());
             assert!(null_val.is_null());
+        }
+    }
+
+    #[test]
+    fn test_value_to_ordered_map() {
+        use crate::ffi::{
+            duckdb_create_int64, duckdb_create_map_type, duckdb_create_map_value, duckdb_create_varchar,
+            duckdb_destroy_value,
+        };
+
+        unsafe {
+            let key_type = LogicalTypeHandle::from(LogicalTypeId::Varchar);
+            let value_type = LogicalTypeHandle::from(LogicalTypeId::Bigint);
+            let map_type = duckdb_create_map_type(key_type.ptr, value_type.ptr);
+
+            let key1 = CString::new("foo").unwrap();
+            let key2 = CString::new("bar").unwrap();
+
+            let keys: Vec<duckdb_value> = vec![
+                duckdb_create_varchar(key1.as_ptr()),
+                duckdb_create_varchar(key2.as_ptr()),
+            ];
+            let values: Vec<duckdb_value> = vec![duckdb_create_int64(42), duckdb_create_int64(100)];
+
+            let duckdb_val = duckdb_create_map_value(map_type, keys.as_ptr().cast_mut(), values.as_ptr().cast_mut(), 2);
+
+            let val = Value::from(duckdb_val);
+
+            let map = val.to_ordered_map();
+
+            for mut v in keys {
+                duckdb_destroy_value(&mut v);
+            }
+            for mut v in values {
+                duckdb_destroy_value(&mut v);
+            }
+
+            let entries: Vec<(String, i64)> = map.iter().map(|(k, v)| (k.clone(), v.to_int64())).collect();
+
+            assert_eq!(entries.len(), 2);
+            assert!(entries.contains(&("foo".to_string(), 42)));
+            assert!(entries.contains(&("bar".to_string(), 100)));
         }
     }
 }
